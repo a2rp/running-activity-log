@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { FiActivity, FiCalendar, FiClock, FiDownload, FiFlag, FiMapPin, FiPlus, FiSearch, FiTarget, FiTrash2, FiTrendingUp, FiX } from "react-icons/fi";
 import ConfirmDialog from "../confirmDialog";
 import styles from "./styles.module.css";
@@ -11,6 +11,21 @@ const dateKey = (date) => [date.getFullYear(), String(date.getMonth() + 1).padSt
 const shiftDate = (value, amount) => { const date = new Date(value + "T12:00:00"); date.setDate(date.getDate() + amount); return dateKey(date); };
 const mondayOf = (value) => { const date = new Date(value + "T12:00:00"); date.setDate(date.getDate() - (date.getDay() + 6) % 7); return dateKey(date); };
 const readStorage = (key, fallback) => { try { const saved = localStorage.getItem(key); return saved ? JSON.parse(saved) : fallback; } catch { return fallback; } };
+const writeStorage = (key, value) => { try { localStorage.setItem(key, JSON.stringify(value)); return true; } catch { return false; } };
+const isDateKey = (value) => typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value) && dateKey(new Date(value + "T12:00:00")) === value;
+const efforts = ["Easy", "Steady", "Tempo", "Long run"];
+const readRuns = (today) => {
+    const saved = readStorage(runsKey, []);
+    if (!Array.isArray(saved)) return [];
+    const ids = new Set();
+    return saved.filter((run) => {
+        if (!run || typeof run !== "object" || Array.isArray(run) || typeof run.id !== "string" || !run.id || ids.has(run.id) || typeof run.route !== "string" || !run.route.trim() || run.route.length > 70 || !isDateKey(run.date) || run.date > today || typeof run.distanceKm !== "number" || !Number.isFinite(run.distanceKm) || run.distanceKm <= 0 || run.distanceKm > 1609.34 || typeof run.minutes !== "number" || !Number.isFinite(run.minutes) || run.minutes < 1 || run.minutes > 1440 || !efforts.includes(run.effort) || (run.notes !== undefined && (typeof run.notes !== "string" || run.notes.length > 240)) || typeof run.createdAt !== "number" || !Number.isFinite(run.createdAt) || run.createdAt < 0) return false;
+        ids.add(run.id);
+        return true;
+    }).map((run) => ({ ...run, route: run.route.trim(), notes: run.notes ?? "" }));
+};
+const readGoal = () => { const saved = Number(readStorage(goalKey, 24)); return Number.isFinite(saved) && saved >= 0.5 && saved <= 804.67 ? saved : 24; };
+const readUnit = () => readStorage(unitKey, "km") === "mi" ? "mi" : "km";
 const formatDate = (value, options = { month: "short", day: "numeric" }) => new Intl.DateTimeFormat("en", options).format(new Date(value + "T12:00:00"));
 const paceLabel = (distanceKm, minutes, unit) => {
     if (!distanceKm || !minutes) return "—";
@@ -22,17 +37,16 @@ const id = () => globalThis.crypto?.randomUUID?.() ?? String(Date.now());
 
 const RunningActivityLog = () => {
     const today = dateKey(new Date());
-    const [runs, setRuns] = useState(() => readStorage(runsKey, []));
-    const [goalKm, setGoalKm] = useState(() => readStorage(goalKey, 24));
-    const [unit, setUnit] = useState(() => readStorage(unitKey, "km"));
+    const [runs, setRuns] = useState(() => readRuns(today));
+    const [goalKm, setGoalKm] = useState(readGoal);
+    const [unit, setUnit] = useState(readUnit);
+    const [storageUnavailable, setStorageUnavailable] = useState(false);
     const [period, setPeriod] = useState("7d");
     const [query, setQuery] = useState("");
     const [effort, setEffort] = useState("All efforts");
     const [isAdding, setIsAdding] = useState(false);
     const [pendingDelete, setPendingDelete] = useState(null);
-    useEffect(() => localStorage.setItem(runsKey, JSON.stringify(runs)), [runs]);
-    useEffect(() => localStorage.setItem(goalKey, String(goalKm)), [goalKm]);
-    useEffect(() => localStorage.setItem(unitKey, JSON.stringify(unit)), [unit]);
+    const persist = (key, value) => { if (!writeStorage(key, value)) setStorageUnavailable(true); };
 
     const weekStart = mondayOf(today);
     const weekRuns = runs.filter((run) => run.date >= weekStart && run.date <= today);
@@ -54,7 +68,9 @@ const RunningActivityLog = () => {
         const distanceKm = unit === "mi" ? amount * mileKm : amount;
         if (!amount || distanceKm <= 0) return;
         const run = { id: id(), route: String(data.get("route")).trim(), date: String(data.get("date")), distanceKm, minutes: Number(data.get("minutes")), effort: String(data.get("effort")), notes: String(data.get("notes")).trim(), createdAt: Date.now() };
-        setRuns((current) => [run, ...current]);
+        const nextRuns = [run, ...runs];
+        setRuns(nextRuns);
+        persist(runsKey, nextRuns);
         setIsAdding(false);
     };
     const exportCsv = () => {
@@ -63,11 +79,14 @@ const RunningActivityLog = () => {
         const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
         const anchor = document.createElement("a"); anchor.href = url; anchor.download = "stridebook-runs.csv"; anchor.click(); URL.revokeObjectURL(url);
     };
-    const removeRun = () => { setRuns((current) => current.filter((run) => run.id !== pendingDelete.id)); setPendingDelete(null); };
+    const removeRun = () => { const nextRuns = runs.filter((run) => run.id !== pendingDelete.id); setRuns(nextRuns); persist(runsKey, nextRuns); setPendingDelete(null); };
+    const updateGoal = (value) => { const nextGoal = unit === "mi" ? value * mileKm : value; setGoalKm(nextGoal); persist(goalKey, nextGoal); };
+    const updateUnit = (nextUnit) => { setUnit(nextUnit); persist(unitKey, nextUnit); };
 
     return <div className={styles.runningLog}>
         <section className={styles.hero} id="overview"><div><span className={styles.eyebrow}><FiActivity aria-hidden="true" /> ONE RUN AT A TIME</span><h1>Every run<br /><span>moves you forward.</span></h1><p>Your miles, your pace, your own little collection of good days.</p></div><div className={styles.heroMark}><span>STRIDE<br />BY STRIDE</span><i /><i /><i /></div></section>
-        <div className={styles.toolbar}><div className={styles.unitSwitch} aria-label="Distance units"><span>VIEW IN</span><button type="button" aria-pressed={unit === "km"} className={unit === "km" ? styles.unitActive : ""} onClick={() => setUnit("km")}>KM</button><button type="button" aria-pressed={unit === "mi"} className={unit === "mi" ? styles.unitActive : ""} onClick={() => setUnit("mi")}>MI</button></div><button className={styles.addRunButton} type="button" onClick={() => setIsAdding(true)}><FiPlus aria-hidden="true" /> Log a run</button></div>
+        <div className={styles.toolbar}><div className={styles.unitSwitch} aria-label="Distance units"><span>VIEW IN</span><button type="button" aria-pressed={unit === "km"} className={unit === "km" ? styles.unitActive : ""} onClick={() => updateUnit("km")}>KM</button><button type="button" aria-pressed={unit === "mi"} className={unit === "mi" ? styles.unitActive : ""} onClick={() => updateUnit("mi")}>MI</button></div><button className={styles.addRunButton} type="button" onClick={() => setIsAdding(true)}><FiPlus aria-hidden="true" /> Log a run</button></div>
+        {storageUnavailable && <p className={styles.storageWarning} role="status">This browser blocked local storage. Your changes will stay only for this page session.</p>}
 
         <section className={styles.metricGrid} aria-label="Run summary"><article><span className={styles.metricIcon}><FiTrendingUp aria-hidden="true" /></span><div><strong>{formatDistance(rangeKm, unit)}<small> {unit}</small></strong><span>{period === "7d" ? "PAST 7 DAYS" : period === "30d" ? "PAST 30 DAYS" : "ALL DISTANCE"}</span></div></article><article><span className={styles.metricIcon}><FiActivity aria-hidden="true" /></span><div><strong>{filteredRuns.length}<small> runs</small></strong><span>ACTIVITIES</span></div></article><article><span className={styles.metricIcon}><FiClock aria-hidden="true" /></span><div><strong>{rangeKm ? paceLabel(rangeKm, rangeMinutes, unit) : "—"}<small> /{unit}</small></strong><span>AVERAGE PACE</span></div></article><article><span className={styles.metricIcon}><FiFlag aria-hidden="true" /></span><div><strong>{rangeMinutes}<small> min</small></strong><span>MOVING TIME</span></div></article></section>
 
@@ -77,7 +96,7 @@ const RunningActivityLog = () => {
                 <div className={styles.runList}>{filteredRuns.map((run, index) => <article className={styles.runRow} key={run.id}><div className={`${styles.runBadge} ${index % 3 === 1 ? styles.badgeAlt : ""}`}><span>{String(run.date.split("-")[2])}</span><small>{formatDate(run.date, { month: "short" }).toUpperCase()}</small></div><div className={styles.runDetails}><h3><FiMapPin aria-hidden="true" /><span>{run.route || "Untitled route"}</span></h3><span><FiCalendar aria-hidden="true" /> {formatDate(run.date, { weekday: "short", month: "short", day: "numeric" })} <i>·</i> {run.effort}</span>{run.notes && <p>{run.notes}</p>}</div><div className={styles.runMetric}><strong>{formatDistance(run.distanceKm, unit)} <small>{unit}</small></strong><span>{run.minutes} min</span></div><div className={styles.runMetric}><strong>{paceLabel(run.distanceKm, run.minutes, unit)}</strong><span>min / {unit}</span></div><button className={styles.deleteButton} type="button" aria-label={`Remove ${run.route} run`} onClick={() => setPendingDelete(run)}><FiTrash2 aria-hidden="true" /></button></article>)}{filteredRuns.length === 0 && <div className={styles.emptyRuns}><span className={styles.emptyTrack}>↗</span><h3>{runs.length ? "No runs match these filters." : "Your next run starts a good story."}</h3><p>{runs.length ? "Try another date range, effort, or search." : "Log an activity to see your pace, distance, and weekly progress here."}</p>{!runs.length && <button type="button" onClick={() => setIsAdding(true)}><FiPlus aria-hidden="true" /> Log your first run</button>}</div>}</div>
             </section>
 
-            <aside className={styles.goalCard} id="weekly-goal" aria-labelledby="goal-title"><div className={styles.goalHeading}><span className={styles.goalIcon}><FiTarget aria-hidden="true" /></span><div><span className={styles.eyebrow}>KEEP A STEADY RHYTHM</span><h2 id="goal-title">Weekly distance</h2></div></div><div className={styles.goalTotal}><strong>{formatDistance(weekDistanceKm, unit)}<small> {unit}</small></strong><span>of {formatDistance(goalKm, unit)} {unit}</span></div><div className={styles.goalProgress}><i style={{ width: `${Math.min(100, weekDistanceKm / goalKm * 100)}%` }} /></div><label className={styles.goalInput}>Weekly goal<input type="number" min="1" max="500" step="1" value={Number((unit === "mi" ? goalKm / mileKm : goalKm).toFixed(1))} onChange={(event) => { const value = Math.max(.5, Number(event.target.value) || .5); setGoalKm(unit === "mi" ? value * mileKm : value); }} /><span>{unit}</span></label><div className={styles.chartHeading}><h3>This week</h3><span>{formatDate(weekStart)} – {formatDate(today)}</span></div><div className={styles.weekChart} role="img" aria-label={`Daily running distance this week, ${formatDistance(weekDistanceKm, unit)} ${unit} total`}>{weekDays.map((day) => <div className={styles.weekColumn} key={day.date}><span>{day.km ? formatDistance(day.km, unit) : ""}</span><div><i style={{ height: `${Math.max(day.km ? 5 : 0, day.km / chartMax * 100)}%` }} /></div><small>{day.label}</small></div>)}</div><p className={styles.goalHint}>Your week is yours to shape. Rest days count too.</p></aside>
+            <aside className={styles.goalCard} id="weekly-goal" aria-labelledby="goal-title"><div className={styles.goalHeading}><span className={styles.goalIcon}><FiTarget aria-hidden="true" /></span><div><span className={styles.eyebrow}>KEEP A STEADY RHYTHM</span><h2 id="goal-title">Weekly distance</h2></div></div><div className={styles.goalTotal}><strong>{formatDistance(weekDistanceKm, unit)}<small> {unit}</small></strong><span>of {formatDistance(goalKm, unit)} {unit}</span></div><div className={styles.goalProgress}><i style={{ width: `${Math.min(100, weekDistanceKm / goalKm * 100)}%` }} /></div><label className={styles.goalInput}>Weekly goal<input type="number" min="1" max="500" step="1" value={Number((unit === "mi" ? goalKm / mileKm : goalKm).toFixed(1))} onChange={(event) => updateGoal(Math.min(500, Math.max(.5, Number(event.target.value) || .5)))} /><span>{unit}</span></label><div className={styles.chartHeading}><h3>This week</h3><span>{formatDate(weekStart)} – {formatDate(today)}</span></div><div className={styles.weekChart} role="img" aria-label={`Daily running distance this week, ${formatDistance(weekDistanceKm, unit)} ${unit} total`}>{weekDays.map((day) => <div className={styles.weekColumn} key={day.date}><span>{day.km ? formatDistance(day.km, unit) : ""}</span><div><i style={{ height: `${Math.max(day.km ? 5 : 0, day.km / chartMax * 100)}%` }} /></div><small>{day.label}</small></div>)}</div><p className={styles.goalHint}>Your week is yours to shape. Rest days count too.</p></aside>
         </div>
 
         {isAdding && <div className={styles.modalOverlay} onMouseDown={(event) => { if (event.target === event.currentTarget) setIsAdding(false); }}><section className={styles.runModal} role="dialog" aria-modal="true" aria-labelledby="run-modal-title"><div className={styles.modalHeading}><div><span className={styles.eyebrow}>ADD TO YOUR LOG</span><h2 id="run-modal-title">A run worth keeping</h2></div><button type="button" aria-label="Close" onClick={() => setIsAdding(false)}><FiX aria-hidden="true" /></button></div><form onSubmit={createRun}><label className={styles.fullField}>Route name<input name="route" maxLength="70" placeholder="e.g. Riverside loop" required autoFocus /></label><div className={styles.formRow}><label>Date<input name="date" type="date" max={today} defaultValue={today} required /></label><label>Distance ({unit})<input name="distance" type="number" min="0.1" max="1000" step="0.1" placeholder={unit === "km" ? "5.0" : "3.1"} required /></label><label>Moving time <small>minutes</small><input name="minutes" type="number" min="1" max="1440" step="1" placeholder="32" required /></label><label>Effort<select name="effort" defaultValue="Easy">{["Easy", "Steady", "Tempo", "Long run"].map((value) => <option key={value}>{value}</option>)}</select></label></div><label className={styles.fullField}>A note <small>Optional</small><textarea name="notes" maxLength="240" placeholder="How did it feel? Anything you want to remember?" /></label><p className={styles.paceTip}><FiActivity aria-hidden="true" /> Pace is calculated from your distance and moving time.</p><div className={styles.modalActions}><button type="button" onClick={() => setIsAdding(false)}>Cancel</button><button type="submit"><FiPlus aria-hidden="true" /> Save run</button></div></form></section></div>}
