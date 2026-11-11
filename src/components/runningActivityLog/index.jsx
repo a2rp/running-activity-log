@@ -34,6 +34,11 @@ const paceLabel = (distanceKm, minutes, unit) => {
 };
 const formatDistance = (distanceKm, unit) => (unit === "mi" ? distanceKm / mileKm : distanceKm).toFixed(1);
 const id = () => globalThis.crypto?.randomUUID?.() ?? String(Date.now());
+const csvCell = (value) => {
+    const text = String(value);
+    const safeText = /^\s*[=+\-@]/.test(text) ? `'${text}` : text;
+    return `"${safeText.replaceAll('"', '""')}"`;
+};
 
 const RunningActivityLog = () => {
     const today = dateKey(new Date());
@@ -75,9 +80,10 @@ const RunningActivityLog = () => {
     };
     const exportCsv = () => {
         const rows = [["Date", "Route", `Distance (${unit})`, "Duration (minutes)", `Pace (min/${unit})`, "Effort", "Notes"], ...filteredRuns.map((run) => [run.date, run.route, formatDistance(run.distanceKm, unit), run.minutes, paceLabel(run.distanceKm, run.minutes, unit), run.effort, run.notes ?? ""])];
-        const csv = rows.map((row) => row.map((cell) => `"${String(cell).replaceAll('"', '""')}"`).join(",")).join("\r\n");
+        const csv = rows.map((row) => row.map(csvCell).join(",")).join("\r\n");
         const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
-        const anchor = document.createElement("a"); anchor.href = url; anchor.download = "stridebook-runs.csv"; anchor.click(); URL.revokeObjectURL(url);
+        const anchor = document.createElement("a"); anchor.href = url; anchor.download = "stridebook-runs.csv"; anchor.click();
+        window.setTimeout(() => URL.revokeObjectURL(url), 0);
     };
     const removeRun = () => { const nextRuns = runs.filter((run) => run.id !== pendingDelete.id); setRuns(nextRuns); persist(runsKey, nextRuns); setPendingDelete(null); };
     const updateGoal = (value) => { const nextGoal = unit === "mi" ? value * mileKm : value; setGoalKm(nextGoal); persist(goalKey, nextGoal); };
